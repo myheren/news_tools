@@ -4,6 +4,7 @@ from datetime import datetime, timedelta
 import pytz
 import time
 import os
+import urllib.parse
 from openai import OpenAI
 
 # ================= 配置区 =================
@@ -12,89 +13,141 @@ AI_API_KEY = "sk-355db06057294ffb87021e501621e0a2"
 AI_BASE_URL = os.environ.get("AI_BASE_URL", "https://api.deepseek.com") 
 MODEL_NAME = "deepseek-chat"
 
-# --- 多镜像备用站 ---
-RSSHUB_MIRRORS = [
-    "https://rsshub.rssforever.com",
-    "https://rss.shab.fun",
-    "https://rsshub.app" 
-]
+def make_gnews_url(query):
+    """生成精准定向的 Google News 抓取链接"""
+    encoded = urllib.parse.quote(query)
+    return f"https://news.google.com/rss/search?q={encoded}&hl=zh-CN&gl=CN&ceid=CN:zh-Hans"
 
-# --- 调高了各个权威媒体的抓取配额 ---
+# --- 核心大升级：每个媒体配置多条抓取通道，坏了一个自动切换下一个 ---
+# 优先级从上到下。如果 RSSHub 挂了，自动无缝切换到 Google News 定向抓取！
 RSS_SOURCES = [
-    {"name": "机器之心", "url": "/jiqizhixin/dailynews", "is_rsshub": True, "weight": 100, "max_items": 15},
-    {"name": "量子位", "url": "/36kr/author/5330644", "is_rsshub": True, "weight": 100, "max_items": 12},
-    {"name": "新智元", "url": "/36kr/author/5099383", "is_rsshub": True, "weight": 100, "max_items": 12},
-    {"name": "InfoQ AI", "url": "/infoq/topic/33", "is_rsshub": True, "weight": 90, "max_items": 8},
-    {"name": "晚点LatePost", "url": "/latepost/index", "is_rsshub": True, "weight": 90, "max_items": 5},
-#    {"name": "Google新闻", "url": "https://news.google.com/rss/search?q=%E4%BA%BA%E5%B7%A5%E6%99%BA%E8%83%BD+when:1d&hl=zh-CN&gl=CN&ceid=CN:zh-Hans", "is_rsshub": False, "weight": 10, "max_items": 5}
+    {
+        "name": "机器之心", 
+        "weight": 100, 
+        "max_items": 15,
+        "urls": [
+            "https://rsshub.rssforever.com/jiqizhixin/dailynews",     # 通道1：RSSHub
+            make_gnews_url("site:jiqizhixin.com when:2d"),            # 通道2：Google定向抓取官网
+            make_gnews_url('"机器之心" 人工智能 when:2d')                # 通道3：Google全网抓取机器之心的报道
+        ]
+    },
+    {
+        "name": "量子位", 
+        "weight": 100, 
+        "max_items": 12,
+        "urls": [
+            "https://rsshub.rssforever.com/36kr/author/5330644",
+            make_gnews_url('"量子位" AI when:2d')
+        ]
+    },
+    {
+        "name": "新智元", 
+        "weight": 100, 
+        "max_items": 12,
+        "urls": [
+            "https://rsshub.rssforever.com/36kr/author/5099383",
+            make_gnews_url('"新智元" AI when:2d')
+        ]
+    },
+    {
+        "name": "InfoQ AI", 
+        "weight": 90, 
+        "max_items": 8,
+        "urls": [
+            "https://rsshub.rssforever.com/infoq/topic/33",
+            make_gnews_url('site:infoq.cn AI when:2d')
+        ]
+    },
+    {
+        "name": "晚点LatePost", 
+        "weight": 90, 
+        "max_items": 5,
+        "urls": [
+            "https://rsshub.rssforever.com/latepost/index",
+            make_gnews_url('site:latepost.com 科技 when:2d')
+        ]
+    },
+    {
+        "name": "Google泛新闻", 
+        "weight": 10, 
+        "max_items": 5,
+        "urls": [
+            make_gnews_url('人工智能 when:1d')
+        ]
+    }
 ]
 
-MAX_LINKS_TO_SHOW = 30   # 底部原始链接展示数量增加到 30 个
-TIME_WINDOW_HOURS = 36   # 放宽到抓取过去 36 小时的新闻，避免周末没新闻
+MAX_LINKS_TO_SHOW = 30   
+TIME_WINDOW_HOURS = 36   
 # =========================================
 
-def fetch_feed_with_retry(source):
+def fetch_source_with_fallback(source, tz, time_limit):
+    """带备用通道的强力抓取逻辑"""
     headers = {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/115.0.0.0 Safari/537.36'
     }
     
-    if not source['is_rsshub']:
+    source_news = []
+    
+    # 逐个尝试该媒体配置的通道
+    for url in source['urls']:
         try:
-            res = requests.get(source['url'], headers=headers, timeout=15)
-            res.raise_for_status()
-            return feedparser.parse(res.content)
+            res = requests.get(url, headers=headers, timeout=12)
+            if res.status_code == 200:
+                feed = feedparser.parse(res.content)
+                
+                # 如果当前通道返回了 0 条数据，说明可能失效了，继续尝试下一个通道
+                if not feed.entries:
+                    print(f"[{source['name']}] 通道返回为空，切换备用通道...")
+                    continue 
+                    
+                for entry in feed.entries:
+                    if hasattr(entry, 'published_parsed'):
+                        pub_time = datetime.fromtimestamp(time.mktime(entry.published_parsed), pytz.utc)
+                        pub_time = pub_time.astimezone(tz)
+                        
+                        # 清洗标题（Google News经常在标题后面加 " - 机器之心"）
+                        clean_title = entry.title.split(' - ')[0]
+                        
+                        if pub_time >= time_limit:
+                            source_news.append({
+                                'source': source['name'],
+                                'weight': source['weight'],
+                                'title': clean_title,
+                                'link': entry.link,
+                                'time': pub_time.strftime("%Y-%m-%d %H:%M"),
+                                'timestamp': pub_time.timestamp()
+                            })
+                
+                if len(source_news) > 0:
+                    print(f"✅ [{source['name']}] 成功抓取 {len(source_news)} 条新闻")
+                    break # 只要有一个通道成功抓到了数据，就立刻跳出循环，不再尝试后面的备用通道
+                    
         except Exception as e:
-            print(f"[{source['name']}] 直连抓取失败: {e}")
-            return None
-
-    for mirror in RSSHUB_MIRRORS:
-        full_url = mirror + source['url']
-        try:
-            res = requests.get(full_url, headers=headers, timeout=12)
-            res.raise_for_status() 
-            feed = feedparser.parse(res.content)
-            if feed.entries:
-                print(f"[{source['name']}] 成功通过节点 {mirror} 获取数据")
-                return feed
-        except Exception:
-            continue 
+            print(f"[{source['name']}] 通道失败 ({url[:30]}...): {e}")
+            continue
             
-    print(f"[{source['name']}] 所有镜像节点均抓取失败！")
-    return None
+    if not source_news:
+        print(f"❌ [{source['name']}] 所有通道均抓取失败！")
+        
+    return source_news
 
 def get_recent_ai_news():
     tz = pytz.timezone('Asia/Shanghai')
     now = datetime.now(tz)
-    # 抓取时间放宽到36小时
     time_limit = now - timedelta(hours=TIME_WINDOW_HOURS)
     
     global_news_list = []
     
     for source in RSS_SOURCES:
-        feed = fetch_feed_with_retry(source)
-        if not feed:
-            continue
-            
-        source_news = []
-        for entry in feed.entries:
-            if hasattr(entry, 'published_parsed'):
-                pub_time = datetime.fromtimestamp(time.mktime(entry.published_parsed), pytz.utc)
-                pub_time = pub_time.astimezone(tz)
-                
-                if pub_time >= time_limit:
-                    source_news.append({
-                        'source': source['name'],
-                        'weight': source['weight'],
-                        'title': entry.title,
-                        'link': entry.link,
-                        'time': pub_time.strftime("%Y-%m-%d %H:%M"),
-                        'timestamp': pub_time.timestamp()
-                    })
+        source_news = fetch_source_with_fallback(source, tz, time_limit)
         
+        # 排序并截取最大配额
         source_news.sort(key=lambda x: x['timestamp'], reverse=True)
         valid_items = source_news[:source['max_items']]
         global_news_list.extend(valid_items)
             
+    # 全局排序：权重第一，时间第二
     global_news_list.sort(key=lambda x: (x['weight'], x['timestamp']), reverse=True)
     return global_news_list
 
@@ -105,7 +158,6 @@ def summarize_news_with_ai(news_list):
 
     news_text = "\n".join([f"- [{news['source']}] {news['title']}" for news in news_list])
     
-    # 修改了 AI 的提示词，强制要求写 6-10 条，并且标题必须带来源
     prompt = f"""
     你是一个资深的 AI 科技媒体主编。请根据以下抓取的科技新闻，帮我写一份「每日 AI 晨报」。
     
@@ -116,9 +168,9 @@ def summarize_news_with_ai(news_list):
        （用一句话总结今天 AI 圈的整体趋势）
        
        🔥 **重要资讯速览**
-       1. **[来源媒体] 新闻事件的核心标题**
+       1. **[{来源媒体}] 新闻事件的核心标题**
           （在这里写1-2句简短有力的事件总结或洞察...）
-       2. **[来源媒体] 新闻事件的核心标题**
+       2. **[{来源媒体}] 新闻事件的核心标题**
           （在这里写1-2句简短有力的事件总结或洞察...）
        （请继续输出，保证至少有6条以上的内容）
        
@@ -146,7 +198,6 @@ def summarize_news_with_ai(news_list):
 
 def send_wechat_notification(news_list, ai_summary):
     if not PUSHPLUS_TOKEN:
-        print("未设置 PUSHPLUS_TOKEN，跳过推送")
         return
 
     if not news_list:
@@ -160,7 +211,6 @@ def send_wechat_notification(news_list, ai_summary):
         else:
             content += "*(AI 总结生成失败，以下为今日精选原始新闻)*\n\n"
             
-        # 底部展示的链接数量提高到 30 个
         for i, news in enumerate(news_list[:MAX_LINKS_TO_SHOW], 1):
             content += f"{i}. **[{news['source']}]** [{news['title']}]({news['link']})\n"
             
@@ -180,25 +230,26 @@ def send_wechat_notification(news_list, ai_summary):
         "template": "markdown"
     }
     
-    response = requests.post("http://www.pushplus.plus/send", json=payload)
-    print("推送结果:", response.text)
+    requests.post("http://www.pushplus.plus/send", json=payload)
 
 if __name__ == "__main__":
     print("1. 开始从头部媒体抓取新闻...")
     recent_news = get_recent_ai_news()
-    print(f"成功筛选出 {len(recent_news)} 条优质新闻用于分析。")
     
     source_counts = {}
     for n in recent_news:
         source_counts[n['source']] = source_counts.get(n['source'], 0) + 1
-    print("喂给 AI 的新闻来源分布:", source_counts)
+    print("\n📊 喂给 AI 的新闻来源分布:")
+    for k, v in source_counts.items():
+        print(f" - {k}: {v} 条")
+    print("-" * 30)
     
     ai_summary = None
     if recent_news:
-        print("2. 开始调用 AI 进行主编级总结...")
+        print("\n2. 开始调用 AI 进行主编级总结...")
         ai_summary = summarize_news_with_ai(recent_news)
-        print("AI 总结完成！" if ai_summary else "AI 总结失败。")
+        print("✅ AI 总结完成！" if ai_summary else "❌ AI 总结失败。")
         
-    print("3. 开始推送到微信...")
+    print("\n3. 开始推送到微信...")
     send_wechat_notification(recent_news, ai_summary)
-    print("任务全部完成！")
+    print("🚀 任务全部完成！")
