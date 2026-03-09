@@ -14,21 +14,18 @@ AI_BASE_URL = os.environ.get("AI_BASE_URL", "https://api.deepseek.com")
 MODEL_NAME = "deepseek-chat"
 
 def make_gnews_url(query):
-    """生成精准定向的 Google News 抓取链接"""
     encoded = urllib.parse.quote(query)
     return f"https://news.google.com/rss/search?q={encoded}&hl=zh-CN&gl=CN&ceid=CN:zh-Hans"
 
-# --- 核心大升级：每个媒体配置多条抓取通道，坏了一个自动切换下一个 ---
-# 优先级从上到下。如果 RSSHub 挂了，自动无缝切换到 Google News 定向抓取！
+# --- 优化了 Google 备用通道的搜索关键词，更容易搜出文章 ---
 RSS_SOURCES = [
     {
         "name": "机器之心", 
         "weight": 100, 
         "max_items": 15,
         "urls": [
-            "https://rsshub.rssforever.com/jiqizhixin/dailynews",     # 通道1：RSSHub
-            make_gnews_url("site:jiqizhixin.com when:2d"),            # 通道2：Google定向抓取官网
-            make_gnews_url('"机器之心" 人工智能 when:2d')                # 通道3：Google全网抓取机器之心的报道
+            "https://rsshub.rssforever.com/jiqizhixin/dailynews",
+            make_gnews_url('site:jiqizhixin.com OR "机器之心" AI when:2d') # 放宽搜索条件
         ]
     },
     {
@@ -64,7 +61,7 @@ RSS_SOURCES = [
         "max_items": 5,
         "urls": [
             "https://rsshub.rssforever.com/latepost/index",
-            make_gnews_url('site:latepost.com 科技 when:2d')
+            make_gnews_url('site:latepost.com OR "晚点LatePost" when:3d') # 晚点发文少，放宽到3天
         ]
     },
     {
@@ -82,23 +79,20 @@ TIME_WINDOW_HOURS = 36
 # =========================================
 
 def fetch_source_with_fallback(source, tz, time_limit):
-    """带备用通道的强力抓取逻辑"""
     headers = {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/115.0.0.0 Safari/537.36'
     }
     
     source_news = []
     
-    # 逐个尝试该媒体配置的通道
     for url in source['urls']:
         try:
             res = requests.get(url, headers=headers, timeout=12)
             if res.status_code == 200:
                 feed = feedparser.parse(res.content)
                 
-                # 如果当前通道返回了 0 条数据，说明可能失效了，继续尝试下一个通道
                 if not feed.entries:
-                    print(f"[{source['name']}] 通道返回为空，切换备用通道...")
+                    print(f"[{source['name']}] 通道返回为空，尝试下一个备用通道...")
                     continue 
                     
                 for entry in feed.entries:
@@ -106,7 +100,6 @@ def fetch_source_with_fallback(source, tz, time_limit):
                         pub_time = datetime.fromtimestamp(time.mktime(entry.published_parsed), pytz.utc)
                         pub_time = pub_time.astimezone(tz)
                         
-                        # 清洗标题（Google News经常在标题后面加 " - 机器之心"）
                         clean_title = entry.title.split(' - ')[0]
                         
                         if pub_time >= time_limit:
@@ -121,14 +114,14 @@ def fetch_source_with_fallback(source, tz, time_limit):
                 
                 if len(source_news) > 0:
                     print(f"✅ [{source['name']}] 成功抓取 {len(source_news)} 条新闻")
-                    break # 只要有一个通道成功抓到了数据，就立刻跳出循环，不再尝试后面的备用通道
+                    break 
                     
         except Exception as e:
-            print(f"[{source['name']}] 通道失败 ({url[:30]}...): {e}")
+            print(f"[{source['name']}] 通道失败: {e}")
             continue
             
     if not source_news:
-        print(f"❌ [{source['name']}] 所有通道均抓取失败！")
+        print(f"❌ [{source['name']}] 所有通道均抓取失败或近期无文章更新！")
         
     return source_news
 
@@ -142,12 +135,10 @@ def get_recent_ai_news():
     for source in RSS_SOURCES:
         source_news = fetch_source_with_fallback(source, tz, time_limit)
         
-        # 排序并截取最大配额
         source_news.sort(key=lambda x: x['timestamp'], reverse=True)
         valid_items = source_news[:source['max_items']]
         global_news_list.extend(valid_items)
             
-    # 全局排序：权重第一，时间第二
     global_news_list.sort(key=lambda x: (x['weight'], x['timestamp']), reverse=True)
     return global_news_list
 
@@ -158,6 +149,7 @@ def summarize_news_with_ai(news_list):
 
     news_text = "\n".join([f"- [{news['source']}] {news['title']}" for news in news_list])
     
+    # 修复了 f-string 中的大括号问题，去掉了导致报错的 {}
     prompt = f"""
     你是一个资深的 AI 科技媒体主编。请根据以下抓取的科技新闻，帮我写一份「每日 AI 晨报」。
     
@@ -168,9 +160,9 @@ def summarize_news_with_ai(news_list):
        （用一句话总结今天 AI 圈的整体趋势）
        
        🔥 **重要资讯速览**
-       1. **[{来源媒体}] 新闻事件的核心标题**
+       1. **[来源媒体] 新闻事件的核心标题**
           （在这里写1-2句简短有力的事件总结或洞察...）
-       2. **[{来源媒体}] 新闻事件的核心标题**
+       2. **[来源媒体] 新闻事件的核心标题**
           （在这里写1-2句简短有力的事件总结或洞察...）
        （请继续输出，保证至少有6条以上的内容）
        
