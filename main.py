@@ -26,7 +26,7 @@ RSS_SOURCES = [
     {"name": "新智元", "url": "/36kr/author/5099383", "is_rsshub": True, "weight": 100, "max_items": 12},
     {"name": "InfoQ AI", "url": "/infoq/topic/33", "is_rsshub": True, "weight": 90, "max_items": 8},
     {"name": "晚点LatePost", "url": "/latepost/index", "is_rsshub": True, "weight": 90, "max_items": 5},
-    {"name": "Google新闻", "url": "https://news.google.com/rss/search?q=%E4%BA%BA%E5%B7%A5%E6%99%BA%E8%83%BD+when:1d&hl=zh-CN&gl=CN&ceid=CN:zh-Hans", "is_rsshub": False, "weight": 10, "max_items": 5}
+#    {"name": "Google新闻", "url": "https://news.google.com/rss/search?q=%E4%BA%BA%E5%B7%A5%E6%99%BA%E8%83%BD+when:1d&hl=zh-CN&gl=CN&ceid=CN:zh-Hans", "is_rsshub": False, "weight": 10, "max_items": 5}
 ]
 
 MAX_LINKS_TO_SHOW = 30   # 底部原始链接展示数量增加到 30 个
