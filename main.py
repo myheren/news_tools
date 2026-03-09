@@ -7,21 +7,23 @@ import os
 from openai import OpenAI
 
 # ================= 配置区 =================
-PUSHPLUS_TOKEN = "be1dc2dfd430433b81ecc4893e93eb68"
-AI_API_KEY = "sk-355db06057294ffb87021e501621e0a2"
-
-# DeepSeek 的接口地址，如果你用 OpenAI，可以删掉或改为 https://api.openai.com/v1
+PUSHPLUS_TOKEN = os.environ.get("PUSHPLUS_TOKEN")
+AI_API_KEY = os.environ.get("AI_API_KEY")
 AI_BASE_URL = os.environ.get("AI_BASE_URL", "https://api.deepseek.com") 
-MODEL_NAME = "deepseek-reasoner" # 如果用别的模型，这里对应修改，例如 gpt-3.5-turbo
+MODEL_NAME = "deepseek-chat"
 
 RSS_URLS = [
     "https://news.google.com/rss/search?q=%E4%BA%BA%E5%B7%A5%E6%99%BA%E8%83%BD+when:1d&hl=zh-CN&gl=CN&ceid=CN:zh-Hans",
     "https://rsshub.app/jiqizhixin/dailynews"
 ]
+
+# --- 新增的限制参数 ---
+MAX_NEWS_FOR_AI = 40     # 最多喂给大模型多少条新闻（控制Token成本）
+MAX_LINKS_TO_SHOW = 15   # 微信底部最多附带多少个原始链接（防止超字数）
 # =========================================
 
 def get_recent_ai_news():
-    """抓取过去24小时的新闻"""
+    """抓取过去24小时的新闻，并按时间倒序排列"""
     tz = pytz.timezone('Asia/Shanghai')
     now = datetime.now(tz)
     one_day_ago = now - timedelta(days=1)
@@ -44,7 +46,9 @@ def get_recent_ai_news():
         except Exception as e:
             print(f"抓取 {url} 失败: {e}")
             
-    return news_list
+    # 按时间倒序排序（最新的排前面），并截取前 MAX_NEWS_FOR_AI 条
+    news_list.sort(key=lambda x: x['time'], reverse=True)
+    return news_list[:MAX_NEWS_FOR_AI]
 
 def summarize_news_with_ai(news_list):
     """调用大模型进行总结"""
@@ -52,7 +56,6 @@ def summarize_news_with_ai(news_list):
         print("未配置 AI_API_KEY，跳过 AI 总结")
         return None
 
-    # 将新闻标题提取出来给 AI
     news_titles = "\n".join([f"- {news['title']}" for news in news_list])
     
     prompt = f"""
@@ -85,7 +88,7 @@ def summarize_news_with_ai(news_list):
                 {"role": "system", "content": "你是一个专业的AI科技编辑。"},
                 {"role": "user", "content": prompt}
             ],
-            temperature=0.7 # 调整创造力，0.7比较适合兼顾准确与生动
+            temperature=0.7
         )
         return response.choices[0].message.content
     except Exception as e:
@@ -103,20 +106,27 @@ def send_wechat_notification(news_list, ai_summary):
     else:
         content = "### 🤖 你的每日 AI 晨报\n\n"
         
-        # 如果 AI 总结成功，放在最前面
         if ai_summary:
             content += f"{ai_summary}\n\n---\n\n"
-            content += "<details><summary>👉 点击查看今日原始新闻链接</summary>\n\n"
+            content += "<details><summary>👉 点击查看最新原始新闻链接</summary>\n\n"
         else:
             content += "*(AI 总结生成失败，以下为今日原始新闻)*\n\n"
             
-        # 附上所有的原始新闻链接
-        for i, news in enumerate(news_list, 1):
+        # 限制底部的原始链接数量，避免超字数
+        for i, news in enumerate(news_list[:MAX_LINKS_TO_SHOW], 1):
             content += f"{i}. [{news['title']}]({news['link']})\n"
+            
+        if len(news_list) > MAX_LINKS_TO_SHOW:
+            content += f"\n*(为了阅读体验，已省略其余 {len(news_list) - MAX_LINKS_TO_SHOW} 条相似新闻)*\n"
         
         if ai_summary:
             content += "</details>\n"
             
+    # 【终极保险】强制检查字符串长度，PushPlus 限制为 2万字
+    # 这里保守截取前 18000 个字符
+    if len(content) > 18000:
+        content = content[:18000] + "\n\n...（内容超长，已被系统截断）..."
+
     payload = {
         "token": PUSHPLUS_TOKEN,
         "title": f"AI每日早报 {datetime.now().strftime('%Y-%m-%d')}",
@@ -130,7 +140,7 @@ def send_wechat_notification(news_list, ai_summary):
 if __name__ == "__main__":
     print("1. 开始抓取AI新闻...")
     recent_news = get_recent_ai_news()
-    print(f"共抓取到 {len(recent_news)} 条新闻。")
+    print(f"成功筛选出最新的 {len(recent_news)} 条新闻用于分析。")
     
     ai_summary = None
     if recent_news:
