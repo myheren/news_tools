@@ -7,10 +7,10 @@ import os
 from openai import OpenAI
 
 # ================= 配置区 =================
-PUSHPLUS_TOKEN = os.environ.get("PUSHPLUS_TOKEN")
-AI_API_KEY = os.environ.get("AI_API_KEY")
+PUSHPLUS_TOKEN = "be1dc2dfd430433b81ecc4893e93eb68"
+AI_API_KEY = "sk-355db06057294ffb87021e501621e0a2"
 AI_BASE_URL = os.environ.get("AI_BASE_URL", "https://api.deepseek.com") 
-MODEL_NAME = "deepseek-chat"
+MODEL_NAME = "deepseek-reason"
 
 RSS_URLS = [
     "https://news.google.com/rss/search?q=%E4%BA%BA%E5%B7%A5%E6%99%BA%E8%83%BD+when:1d&hl=zh-CN&gl=CN&ceid=CN:zh-Hans",
