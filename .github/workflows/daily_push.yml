@@ -1,0 +1,31 @@
+name: Daily AI News Push
+
+on:
+  schedule:
+    # 这里的cron使用的是UTC时间。北京时间早上10点 = UTC时间凌晨2点
+    # 格式: 分 时 日 月 周
+    - cron: '0 10 * * *'
+  workflow_dispatch: # 允许手动点击运行，方便测试
+
+jobs:
+  run-scraper:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout Repository
+      uses: actions/checkout@v3
+
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.10'
+
+    - name: Install Dependencies
+      run: |
+        pip install -r requirements.txt
+
+    - name: Run Script
+      env:
+        PUSHPLUS_TOKEN: 'be1dc2dfd430433b81ecc4893e93eb68'
+      run: |
+        python main.py
