@@ -2,10 +2,8 @@ name: Daily AI News Push
 
 on:
   schedule:
-    # 这里的cron使用的是UTC时间。北京时间早上10点 = UTC时间凌晨2点
-    # 格式: 分 时 日 月 周
-    - cron: '0 10 * * *'
-  workflow_dispatch: # 允许手动点击运行，方便测试
+    - cron: '0 2 * * *'
+  workflow_dispatch: 
 
 jobs:
   run-scraper:
@@ -27,5 +25,6 @@ jobs:
     - name: Run Script
       env:
         PUSHPLUS_TOKEN: 'be1dc2dfd430433b81ecc4893e93eb68'
+        AI_API_KEY: 'sk-355db06057294ffb87021e501621e0a2'
       run: |
         python main.py
